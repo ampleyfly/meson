@@ -711,45 +711,10 @@ class Resolver:
 
         return login, password
 
-    def get_data(self, urlstring: str) -> T.Tuple[str, str]:
+    def _get_data_helper(self, resp, dlsize):
         blocksize = 10 * 1024
         h = hashlib.sha256()
-        tmpfile = tempfile.NamedTemporaryFile(mode='wb', dir=self.cachedir, delete=False)
-        url = urllib.parse.urlparse(urlstring)
-        if url.hostname and url.hostname.endswith(WHITELIST_SUBDOMAIN):
-            resp = open_wrapdburl(urlstring, allow_insecure=self.allow_insecure, have_opt=self.wrap_frontend)
-        elif WHITELIST_SUBDOMAIN in urlstring:
-            raise WrapException(f'{urlstring} may be a WrapDB-impersonating URL')
-        else:
-            headers = {
-                'User-Agent': f'mesonbuild/{coredata.version}',
-                'Accept-Language': '*',
-                'Accept-Encoding': '*',
-            }
-            creds = self.get_netrc_credentials(url.netloc)
-
-            if creds is not None and '@' not in url.netloc:
-                login, password = creds
-                if url.scheme == 'https':
-                    enc_creds = b64encode(f'{login}:{password}'.encode()).decode()
-                    headers.update({'Authorization': f'Basic {enc_creds}'})
-                elif url.scheme == 'ftp':
-                    urlstring = urllib.parse.urlunparse(url._replace(netloc=f'{login}:{password}@{url.netloc}'))
-                else:
-                    mlog.warning('Meson is not going to use netrc credentials for protocols other than https/ftp',
-                                 fatal=False)
-
-            try:
-                req = urllib.request.Request(urlstring, headers=headers)
-                resp = urllib.request.urlopen(req, timeout=REQ_TIMEOUT)
-            except OSError as e:
-                mlog.log(str(e))
-                raise WrapException(f'could not get {urlstring}; is the internet available?')
-        with contextlib.closing(resp) as resp, tmpfile as tmpfile:
-            try:
-                dlsize = int(resp.info()['Content-Length'])
-            except TypeError:
-                dlsize = None
+        with tempfile.NamedTemporaryFile(mode='wb', dir=self.cachedir, delete=False) as tmpfile:
             if dlsize is None:
                 print('Downloading file of unknown size.')
                 while True:
@@ -774,6 +739,48 @@ class Resolver:
             progress_bar.close()
             hashvalue = h.hexdigest()
         return hashvalue, tmpfile.name
+
+    def _content_length(self, resp):
+        try:
+            return int(resp.info()['Content-Length'])
+        except TypeError:
+            return None
+
+    def get_data(self, urlstring: str) -> T.Tuple[str, str]:
+        url = urllib.parse.urlparse(urlstring)
+        if url.hostname and url.hostname.endswith(WHITELIST_SUBDOMAIN):
+            with open_wrapdburl(urlstring,
+                                allow_insecure=self.allow_insecure,
+                                have_opt=self.wrap_frontend) as resp:
+                return self._get_data_helper(resp, self._content_length(resp))
+        elif WHITELIST_SUBDOMAIN in urlstring:
+            raise WrapException(f'{urlstring} may be a WrapDB-impersonating URL')
+        else:
+            headers = {
+                'User-Agent': f'mesonbuild/{coredata.version}',
+                'Accept-Language': '*',
+                'Accept-Encoding': '*',
+            }
+            creds = self.get_netrc_credentials(url.netloc)
+
+            if creds is not None and '@' not in url.netloc:
+                login, password = creds
+                if url.scheme == 'https':
+                    enc_creds = b64encode(f'{login}:{password}'.encode()).decode()
+                    headers.update({'Authorization': f'Basic {enc_creds}'})
+                elif url.scheme == 'ftp':
+                    urlstring = urllib.parse.urlunparse(url._replace(netloc=f'{login}:{password}@{url.netloc}'))
+                else:
+                    mlog.warning('Meson is not going to use netrc credentials for protocols other than https/ftp',
+                                 fatal=False)
+
+            try:
+                req = urllib.request.Request(urlstring, headers=headers)
+                with urllib.request.urlopen(req, timeout=REQ_TIMEOUT) as resp:
+                    return self._get_data_helper(resp, self._content_length(resp))
+            except OSError as e:
+                mlog.log(str(e))
+                raise WrapException(f'could not get {urlstring}; is the internet available?')
 
     def check_hash(self, what: str, path: str, hash_required: bool = True) -> None:
         if what + '_hash' not in self.wrap.values and not hash_required:
