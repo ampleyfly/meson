@@ -759,6 +759,15 @@ class Resolver:
                 return self._get_data_helper(resp, self._content_length(resp))
         elif WHITELIST_SUBDOMAIN in urlstring:
             raise WrapException(f'{urlstring} may be a WrapDB-impersonating URL')
+        elif url.scheme == 'sftp':
+            if not paramiko:
+                raise WrapException(f'Scheme sftp is not available. Install paramiko to enable it.')
+            with paramiko.SSHClient() as ssh_client:
+                ssh_client.load_system_host_keys()
+                ssh_client.connect(url.hostname, url.port, url.username, url.password)
+                sftp = ssh_client.open_sftp()
+                resp = sftp.file(url.path)
+                return self._get_data_helper(resp, resp.stat().st_size)
         else:
             headers = {
                 'User-Agent': f'mesonbuild/{coredata.version}',
