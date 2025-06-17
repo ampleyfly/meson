@@ -22,6 +22,10 @@ import typing as T
 import textwrap
 import json
 import gzip
+try:
+    import paramiko
+except:
+    paramiko = None
 
 from base64 import b64encode
 from netrc import netrc
