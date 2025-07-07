@@ -720,6 +720,29 @@ class Resolver:
             resp = open_wrapdburl(urlstring, allow_insecure=self.allow_insecure, have_opt=self.wrap_frontend)
         elif WHITELIST_SUBDOMAIN in urlstring:
             raise WrapException(f'{urlstring} may be a WrapDB-impersonating URL')
+        elif url.scheme == 'sftp':
+            sftp = shutil.which('sftp')
+            if sftp is None:
+                raise WrapException('Scheme sftp is not available. Install sftp to enable it.')
+            with tempfile.TemporaryDirectory() as workdir, \
+                    tempfile.NamedTemporaryFile(mode='wb', dir=self.cachedir, delete=False) as tmpfile:
+                args = []
+                if 'source_hostkey' in self.wrap.values:
+                    with open(os.path.join(workdir, 'known_hosts'), 'w', encoding='utf-8') as f:
+                        f.write(f'[{url.hostname}]:{url.port} {self.wrap.get("source_hostkey")}')
+                    args += ['-o', 'UserKnownHostsFile=known_hosts']
+                if 'source_identityfile' in self.wrap.values:
+                    args += ['-o', f'IdentityFile={self.wrap.get("source_identityfile")}']
+                # Older versions of the sftp client cannot handle URLs, hence the splitting of url below
+                if url.port:
+                    args += ['-P', f'{url.port}']
+                user = f'{url.username}@' if url.username else ''
+                command = [sftp, '-o', 'KbdInteractiveAuthentication=no', *args, f'{user}{url.hostname}:{url.path[1:]}']
+                subprocess.run(command, cwd=workdir, check=True)
+                downloaded = os.path.join(workdir, os.path.basename(url.path))
+                tmpfile.close()
+                shutil.move(downloaded, tmpfile.name)
+                return self.hash_file(tmpfile.name), tmpfile.name
         else:
             headers = {
                 'User-Agent': f'mesonbuild/{coredata.version}',
